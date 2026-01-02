@@ -1,0 +1,80 @@
+import torch
+import torch.nn as nn
+import numpy as np
+import pandas as pd
+from coingecko import CoinGeckoAPI  # Fetch real data
+from sklearn.preprocessing import MinMaxScaler
+from sklearn.metrics import mean_squared_error
+
+# Step 1: Fetch historical BTC data (last 365 days)
+cg = CoinGeckoAPI()
+data = cg.get_coin_market_chart_by_id(id='bitcoin', vs_currency='usd', days=365)
+prices = [item[1] for item in data['prices']]  # Extract closing prices
+df = pd.DataFrame(prices, columns=['price'])
+
+# Step 2: Preprocess data
+scaler = MinMaxScaler(feature_range=(0, 1))
+scaled_data = scaler.fit_transform(df.values)
+
+def create_dataset(data, time_step=60):
+    X, y = [], []
+    for i in range(len(data) - time_step - 1):
+        X.append(data[i:(i + time_step), 0])
+        y.append(data[i + time_step, 0])
+    return np.array(X), np.array(y)
+
+time_step = 60
+X, y = create_dataset(scaled_data, time_step)
+X = X.reshape(X.shape[0], X.shape[1], 1)
+
+train_size = int(len(X) * 0.8)
+X_train, X_test = X[:train_size], X[train_size:]
+y_train, y_test = y[:train_size], y[train_size:]
+
+# Step 3: Define LSTM Model
+class LSTMModel(nn.Module):
+    def __init__(self):
+        super(LSTMModel, self).__init__()
+        self.lstm = nn.LSTM(1, 50, num_layers=1, batch_first=True)
+        self.fc = nn.Linear(50, 1)
+    
+    def forward(self, x):
+        h0 = torch.zeros(1, x.size(0), 50)
+        c0 = torch.zeros(1, x.size(0), 50)
+        out, _ = self.lstm(x, (h0, c0))
+        out = self.fc(out[:, -1, :])
+        return out
+
+model = LSTMModel()
+criterion = nn.MSELoss()
+optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+
+# Step 4: Train Model
+X_train_tensor = torch.FloatTensor(X_train)
+y_train_tensor = torch.FloatTensor(y_train).view(-1, 1)
+
+for epoch in range(50):  # Quick train for prototype
+    optimizer.zero_grad()
+    outputs = model(X_train_tensor)
+    loss = criterion(outputs, y_train_tensor)
+    loss.backward()
+    optimizer.step()
+    if epoch % 10 == 0:
+        print(f'Epoch {epoch}: Loss {loss.item()}')
+
+# Step 5: Test and Predict
+X_test_tensor = torch.FloatTensor(X_test)
+with torch.no_grad():
+    predicted = model(X_test_tensor).numpy()
+predicted = scaler.inverse_transform(predicted)
+y_test_inv = scaler.inverse_transform(y_test.reshape(-1, 1))
+mse = mean_squared_error(y_test_inv, predicted)
+print(f'Mean Squared Error: {mse}')
+
+# Simulate trade: If predicted > current, buy signal
+current_price = prices[-1]
+next_pred = predicted[-1][0]
+signal = 'Buy' if next_pred > current_price else 'Sell'
+print(f'Next Prediction: {next_pred}, Signal: {signal}')
+
+# Deep: Expand to full app—add DeFi integration (e.g., Web3.py for swaps), deploy as Flask API, monetize signals.
